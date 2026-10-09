@@ -186,9 +186,6 @@ function AccountPanel({ config, onLoggedOut }: { config: PluginConfig; onLoggedO
           <ToggleField label="Clips" checked={clips} onChange={toggleClips} />
         </PanelSectionRow>
         <PanelSectionRow>
-          <ToggleField label="Notifications" checked={notifications} onChange={toggleNotifications} />
-        </PanelSectionRow>
-        <PanelSectionRow>
           <div style={{ fontSize: "12px", opacity: 0.7 }}>
             You can manually upload screenshots and clips by choosing Share in Media.
           </div>
@@ -204,6 +201,9 @@ function AccountPanel({ config, onLoggedOut }: { config: PluginConfig; onLoggedO
             selectedOption={albumId}
             onChange={(option) => chooseAlbum(option.data)}
           />
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <ToggleField label="Notifications" checked={notifications} onChange={toggleNotifications} />
         </PanelSectionRow>
       </PanelSection>
       <PanelSection title="Account">
