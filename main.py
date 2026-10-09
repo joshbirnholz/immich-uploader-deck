@@ -5,7 +5,6 @@ import logging
 import shutil
 import subprocess
 import sys
-import glob
 import json
 import ssl
 import urllib.error
@@ -14,8 +13,8 @@ import urllib.request
 PLUGIN_DIR = pathlib.Path(__file__).parent.resolve()
 CONFIG_DIR = pathlib.Path("/home/deck/.config/immichuploader")
 CONFIG_FILE = CONFIG_DIR / "immichuploader.yml"
-SCREENSHOTS_BASE = pathlib.Path("/home/deck/.local/share/Steam/userdata")
 SYSTEM_CA_BUNDLE = pathlib.Path("/etc/ssl/certs/ca-certificates.crt")
+API_KEY_PERMISSIONS = ["asset.upload", "album.read", "albumAsset.create"]
 
 sys.path.insert(0, str(PLUGIN_DIR / "py_modules"))
 
@@ -42,14 +41,16 @@ def ssl_context():
     return context
 
 
-def immich_request(url, path, body=None, token=None):
+def immich_request(url, path, body=None, token=None, api_key=None, method="POST"):
     """Send a JSON request to the Immich API and return the decoded response."""
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
+    if api_key:
+        headers["x-api-key"] = api_key
 
     data = json.dumps(body).encode() if body is not None else None
-    request = urllib.request.Request(f"{url}{path}", data=data, headers=headers, method="POST")
+    request = urllib.request.Request(f"{url}{path}", data=data, headers=headers, method=method)
 
     with urllib.request.urlopen(request, timeout=15, context=ssl_context()) as response:
         content = response.read()
@@ -57,14 +58,14 @@ def immich_request(url, path, body=None, token=None):
 
 
 def create_api_key(url, email, password):
-    """Log in with email/password, mint an upload-scoped API key, then log out."""
+    """Log in with email/password, mint a narrowly scoped API key, then log out."""
     session = immich_request(url, "/auth/login", {"email": email, "password": password})
     token = session["accessToken"]
 
     try:
         try:
             created = immich_request(
-                url, "/api-keys", {"name": "Steam Deck", "permissions": ["asset.upload"]}, token
+                url, "/api-keys", {"name": "Steam Deck", "permissions": API_KEY_PERMISSIONS}, token
             )
         except urllib.error.HTTPError as exc:
             # Older Immich versions don't accept the permissions field.
@@ -124,16 +125,20 @@ class Plugin:
 
         self.process = None
 
-    async def toggle(self):
-        config = await self.get_config()
-        config["enabled"] = not await self.is_running()
-
-        await self.write_config(config)
-
+    async def restart_if_running(self):
         if await self.is_running():
             await self.stop()
-        else:
             await self.start()
+
+    async def set_enabled(self, enabled):
+        config = await self.get_config()
+        config["enabled"] = enabled
+        await self.write_config(config)
+
+        if enabled:
+            await self.start()
+        else:
+            await self.stop()
 
     async def is_running(self):
         if self.process is None:
@@ -182,10 +187,7 @@ class Plugin:
         await self.write_config(config)
         log("login successful, API key stored")
 
-        if await self.is_running():
-            await self.stop()
-            await self.start()
-
+        await self.restart_if_running()
         return {"success": True}
 
     async def logout(self):
@@ -194,6 +196,7 @@ class Plugin:
         uploader = config.setdefault("uploader", {})
         uploader["api_key"] = ""
         uploader.pop("email", None)
+        uploader.pop("album_id", None)
         await self.write_config(config)
         await self.stop()
         log("logged out, API key removed")
@@ -203,48 +206,58 @@ class Plugin:
         with open(CONFIG_FILE, "w") as fw:
             yaml.safe_dump(config, fw)
 
-    async def list_recent_screenshots(self):
-        """Find the 20 most recent screenshots across all Steam users/games."""
-        search_path = str(SCREENSHOTS_BASE / "*" / "760" / "remote" / "*" / "screenshots" / "*.jpg")
-        files = glob.glob(search_path)
-        
-        # Filter out thumbnails
-        files = [f for f in files if "thumbnail" not in f]
-        
-        # Sort by mtime descending
-        files.sort(key=os.path.getmtime, reverse=True)
-        
-        # Return last 20 with name and full path
-        recent = []
-        for f in files[:20]:
-            recent.append({
-                "name": os.path.basename(f),
-                "path": f,
-                "mtime": os.path.getmtime(f)
-            })
-        return recent
+    async def list_albums(self):
+        """Return the user's albums as [{id, name}], sorted by name."""
+        uploader = (await self.get_config()).get("uploader") or {}
+        try:
+            albums = await asyncio.to_thread(
+                immich_request, uploader.get("url", ""), "/albums", api_key=uploader.get("api_key"), method="GET"
+            )
+        except urllib.error.HTTPError as exc:
+            if exc.code == 403:
+                return {"success": False, "error": "Log out and back in to allow choosing an album."}
+            return {"success": False, "error": f"Immich returned {exc.code}."}
+        except Exception as exc:
+            log(f"listing albums failed: {exc}")
+            return {"success": False, "error": str(exc)}
+
+        albums = [{"id": a["id"], "name": a["albumName"]} for a in albums]
+        albums.sort(key=lambda a: a["name"].lower())
+        return {"success": True, "albums": albums}
+
+    async def set_album(self, album_id):
+        config = await self.get_config()
+        uploader = config.setdefault("uploader", {})
+        if album_id:
+            uploader["album_id"] = album_id
+        else:
+            uploader.pop("album_id", None)
+        await self.write_config(config)
+        await self.restart_if_running()
+        return True
 
     async def manual_upload(self, path):
-        """Manually trigger an upload for a specific file."""
+        """Upload a single screenshot right away."""
+        uploader = (await self.get_config()).get("uploader") or {}
+        if not uploader.get("api_key"):
+            return {"success": False, "error": "Log in from the Immich Uploader panel first."}
+
         log(f"manually uploading: {path}")
         try:
-            res = subprocess.run(
-                [
-                    str(PLUGIN_DIR / "bin" / "immichuploader"),
-                    "-c",
-                    str(CONFIG_FILE),
-                    "upload",
-                    path
-                ],
+            res = await asyncio.to_thread(
+                subprocess.run,
+                [str(PLUGIN_DIR / "bin" / "immichuploader"), "-c", str(CONFIG_FILE), "upload", path],
                 capture_output=True,
-                text=True
+                text=True,
             )
-            if res.returncode == 0:
-                log("manual upload successful")
-                return {"success": True}
-            else:
-                log(f"manual upload failed: {res.stderr}")
-                return {"success": False, "error": res.stderr}
-        except Exception as e:
-            log(f"manual upload error: {str(e)}")
-            return {"success": False, "error": str(e)}
+        except Exception as exc:
+            log(f"manual upload error: {exc}")
+            return {"success": False, "error": str(exc)}
+
+        if res.returncode == 0:
+            log("manual upload successful")
+            return {"success": True}
+
+        log(f"manual upload failed: {res.stderr}")
+        lines = [line for line in res.stderr.strip().splitlines() if line.strip()]
+        return {"success": False, "error": lines[-1] if lines else "Upload failed."}

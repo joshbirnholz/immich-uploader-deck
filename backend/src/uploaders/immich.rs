@@ -11,6 +11,13 @@ use crate::uploaders::Uploader;
 pub struct ImmichConfig {
     pub url: String,
     pub api_key: String,
+    #[serde(default)]
+    pub album_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct UploadResponse {
+    id: String,
 }
 
 pub struct ImmichUploader {
@@ -24,6 +31,25 @@ impl ImmichUploader {
             config,
             client: reqwest::Client::new(),
         })
+    }
+
+    async fn add_to_album(&self, album_id: &str, asset_id: &str) -> Result<(), anyhow::Error> {
+        let url = format!("{}/albums/{}/assets", self.config.url.trim_end_matches('/'), album_id);
+        let response = self.client
+            .put(url)
+            .header("x-api-key", &self.config.api_key)
+            .json(&serde_json::json!({ "ids": [asset_id] }))
+            .send()
+            .await
+            .context("failed to send album request to Immich")?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let text = response.text().await.unwrap_or_default();
+            return Err(anyhow::anyhow!("adding to Immich album failed with status {}: {}", status, text));
+        }
+
+        Ok(())
     }
 }
 
@@ -68,6 +94,13 @@ impl Uploader for ImmichUploader {
             let status = response.status();
             let text = response.text().await.unwrap_or_default();
             return Err(anyhow::anyhow!("Immich upload failed with status {}: {}", status, text));
+        }
+
+        // Duplicates come back with the existing asset's id, so a retried upload still lands in the album.
+        let asset: UploadResponse = response.json().await.context("could not parse Immich upload response")?;
+
+        if let Some(album_id) = self.config.album_id.as_deref().filter(|id| !id.is_empty()) {
+            self.add_to_album(album_id, &asset.id).await?;
         }
 
         Ok(screenshot)

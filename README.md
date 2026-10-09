@@ -13,11 +13,12 @@ Immich Uploader is a service for your Steam Deck that automatically uploads any 
 - **Automatic Upload:** Screenshots are uploaded as soon as they are taken.
 - **Immich Integration:** Dedicated support for Immich using its official API.
 - **Offline Support:** Maintains an internal database to retry failed uploads when you're back online.
-- **Manual Upload UI:** Browse recent screenshots and trigger uploads from the Decky panel.
+- **Share Menu:** Pick **Upload to Immich** from the Share menu in Steam's screenshot viewer to upload any screenshot.
+- **Albums:** Optionally add every upload to an Immich album of your choice.
 
 ### Configuration
-1. **Immich URL:** The API endpoint of your Immich instance (e.g., `http://192.168.1.10:2283/api`).
-2. **Login:** Enter your Immich email and password and press **Log In**. The plugin creates an upload-only API key named "Steam Deck" and saves it; your password is not stored. You can revoke the key anytime in Immich under Account Settings → API Keys.
+1. **Log In:** Enter your Immich URL (e.g., `http://192.168.1.10:2283`), email and password and press **Log In**. The plugin creates an API key named "Steam Deck" that can only upload and add to albums, and saves it; your password is not stored. You can revoke the key anytime in Immich under Account Settings → API Keys.
+2. **Album:** Optionally choose an album that uploads are added to.
 
 ### Installation
 This plugin is designed for [Decky Loader](https://github.com/SteamDeckHomebrew/decky-loader).
@@ -37,11 +38,12 @@ Immich Uploader ist ein Dienst für das Steam Deck, der automatisch jeden Screen
 - **Automatischer Upload:** Screenshots werden sofort nach der Aufnahme hochgeladen.
 - **Immich Integration:** Dedizierte Unterstützung für Immich über die offizielle API.
 - **Offline-Unterstützung:** Verwendet eine interne Datenbank, um fehlgeschlagene Uploads zu wiederholen, sobald du wieder online bist.
-- **Manuelle Upload-Oberfläche:** Durchsuche die neuesten Screenshots und starte Uploads direkt über das Decky-Panel.
+- **Teilen-Menü:** Wähle im Teilen-Menü der Steam-Screenshot-Ansicht **Upload to Immich**, um einen beliebigen Screenshot hochzuladen.
+- **Alben:** Füge jeden Upload optional einem Immich-Album deiner Wahl hinzu.
 
 ### Konfiguration
-1. **Immich-URL:** Der API-Endpunkt deiner Immich-Instanz (z. B. `http://192.168.1.10:2283/api`).
-2. **Anmeldung:** Gib deine Immich-E-Mail und dein Passwort ein und tippe auf **Log In**. Das Plugin erstellt einen API-Key namens „Steam Deck“ (nur Upload-Rechte) und speichert ihn; dein Passwort wird nicht gespeichert. Du kannst den Key jederzeit in Immich unter Kontoeinstellungen → API-Schlüssel widerrufen.
+1. **Anmeldung:** Gib deine Immich-URL (z. B. `http://192.168.1.10:2283`), E-Mail und Passwort ein und tippe auf **Log In**. Das Plugin erstellt einen API-Key namens „Steam Deck“, der nur hochladen und zu Alben hinzufügen darf, und speichert ihn; dein Passwort wird nicht gespeichert. Du kannst den Key jederzeit in Immich unter Kontoeinstellungen → API-Schlüssel widerrufen.
+2. **Album:** Wähle optional ein Album, dem Uploads hinzugefügt werden.
 
 ### Installation
 Dieses Plugin wurde für den [Decky Loader](https://github.com/SteamDeckHomebrew/decky-loader) entwickelt.
