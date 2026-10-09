@@ -6,14 +6,13 @@ import { ClipSummary, exportClip, gameName, onClipSaved, withRequestedClip } fro
 import { ShareTarget, patchShareMenu, screenshotPath } from "./shareMenu";
 
 const getConfig = callable<[], PluginConfig>("get_config");
-const setEnabled = callable<[boolean], void>("set_enabled");
 const login = callable<[string, string, string], Result>("login");
 const logout = callable<[], boolean>("logout");
 const listAlbums = callable<[], Result & { albums?: Album[] }>("list_albums");
 const setAlbum = callable<[string], boolean>("set_album");
 const manualUpload = callable<[string, string], Result>("manual_upload");
 const uploadVideo = callable<[string, string, string, number], Result>("upload_video");
-const setAutoUpload = callable<["screenshots" | "videos", boolean], void>("set_auto_upload");
+const setAutoUpload = callable<["screenshots" | "clips", boolean], void>("set_auto_upload");
 
 type Result = {
   success: boolean;
@@ -28,7 +27,7 @@ type Album = {
 type PluginConfig = {
   enabled?: boolean;
   auto_upload?: boolean;
-  auto_upload_videos?: boolean;
+  auto_upload_clips?: boolean;
   uploader?: {
     url?: string;
     api_key?: string;
@@ -40,10 +39,10 @@ type PluginConfig = {
 const PLACEHOLDER_URL = "https://YOUR_IMMICH_URL/api";
 
 // Read by the saved-clip listener, which runs outside the panel.
-const autoUploadVideos = { enabled: false };
+const autoUploadClips = { enabled: false };
 
-function updateAutoUploadVideos(config: PluginConfig) {
-  autoUploadVideos.enabled = (config.enabled ?? true) && (config.auto_upload_videos ?? false);
+function updateAutoUploadClips(config: PluginConfig) {
+  autoUploadClips.enabled = config.auto_upload_clips ?? false;
 }
 
 function LoginForm({ initialUrl, onLoggedIn }: { initialUrl: string; onLoggedIn: () => void }) {
@@ -103,9 +102,8 @@ function LoginForm({ initialUrl, onLoggedIn }: { initialUrl: string; onLoggedIn:
 }
 
 function AccountPanel({ config, onLoggedOut }: { config: PluginConfig; onLoggedOut: () => void }) {
-  const [enabled, setEnabledState] = useState(config.enabled ?? true);
-  const [screenshots, setScreenshots] = useState(config.auto_upload ?? true);
-  const [videos, setVideos] = useState(config.auto_upload_videos ?? false);
+  const [screenshots, setScreenshots] = useState((config.enabled ?? true) && (config.auto_upload ?? true));
+  const [clips, setClips] = useState(config.auto_upload_clips ?? false);
   const [albumId, setAlbumId] = useState(config.uploader?.album_id ?? "");
   const [albums, setAlbums] = useState<Album[] | null>(null);
   const [albumError, setAlbumError] = useState("");
@@ -123,23 +121,15 @@ function AccountPanel({ config, onLoggedOut }: { config: PluginConfig; onLoggedO
       .catch((err) => setAlbumError(String(err)));
   }, []);
 
-  useEffect(() => {
-    updateAutoUploadVideos({ enabled, auto_upload_videos: videos });
-  }, [enabled, videos]);
-
-  const toggleEnabled = async (checked: boolean) => {
-    setEnabledState(checked);
-    await setEnabled(checked);
-  };
-
   const toggleScreenshots = async (checked: boolean) => {
     setScreenshots(checked);
     await setAutoUpload("screenshots", checked);
   };
 
-  const toggleVideos = async (checked: boolean) => {
-    setVideos(checked);
-    await setAutoUpload("videos", checked);
+  const toggleClips = async (checked: boolean) => {
+    setClips(checked);
+    updateAutoUploadClips({ auto_upload_clips: checked });
+    await setAutoUpload("clips", checked);
   };
 
   const chooseAlbum = async (id: string) => {
@@ -161,21 +151,20 @@ function AccountPanel({ config, onLoggedOut }: { config: PluginConfig; onLoggedO
 
   return (
     <>
+      <PanelSection title="Upload Automatically">
+        <PanelSectionRow>
+          <ToggleField label="Screenshots" checked={screenshots} onChange={toggleScreenshots} />
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <ToggleField label="Clips" checked={clips} onChange={toggleClips} />
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <div style={{ fontSize: "12px", opacity: 0.7 }}>
+            You can manually upload screenshots and clips by choosing Share in Media.
+          </div>
+        </PanelSectionRow>
+      </PanelSection>
       <PanelSection>
-        <PanelSectionRow>
-          <ToggleField
-            label="Upload Automatically"
-            description="Upload new captures as soon as they're saved."
-            checked={enabled}
-            onChange={toggleEnabled}
-          />
-        </PanelSectionRow>
-        <PanelSectionRow>
-          <ToggleField label="Screenshots" disabled={!enabled} checked={screenshots} onChange={toggleScreenshots} />
-        </PanelSectionRow>
-        <PanelSectionRow>
-          <ToggleField label="Videos" disabled={!enabled} checked={videos} onChange={toggleVideos} />
-        </PanelSectionRow>
         <PanelSectionRow>
           <DropdownItem
             label="Album"
@@ -230,17 +219,17 @@ async function uploadClip(summary: ClipSummary, exportedPath?: string): Promise<
   return uploadVideo(path, summary.clip_id, gameName(summary.game_id), summary.date_recorded);
 }
 
-function describe(screenshots: number, videos: number): string {
+function describe(screenshots: number, clips: number): string {
   const parts = [];
   if (screenshots > 0) parts.push(screenshots === 1 ? "screenshot" : `${screenshots} screenshots`);
-  if (videos > 0) parts.push(videos === 1 ? "video" : `${videos} videos`);
+  if (clips > 0) parts.push(clips === 1 ? "clip" : `${clips} clips`);
   return parts.join(" and ");
 }
 
 async function uploadShareTarget(target: ShareTarget) {
-  const videoCount = target.clips.length + (target.clipRequest ? 1 : 0);
-  const what = describe(target.screenshots.length, videoCount);
-  const total = target.screenshots.length + videoCount;
+  const clipCount = target.clips.length + (target.clipRequest ? 1 : 0);
+  const what = describe(target.screenshots.length, clipCount);
+  const total = target.screenshots.length + clipCount;
   toaster.toast({ title: "Immich", body: `Uploading ${what}...` });
 
   const uploads: (() => Promise<Result>)[] = [
@@ -286,7 +275,7 @@ async function uploadShareTarget(target: ShareTarget) {
 }
 
 async function autoUploadClip(summary: ClipSummary) {
-  if (!autoUploadVideos.enabled) {
+  if (!autoUploadClips.enabled) {
     return;
   }
   try {
@@ -302,7 +291,7 @@ async function autoUploadClip(summary: ClipSummary) {
 export default definePlugin(() => {
   const unpatchShareMenu = patchShareMenu(uploadShareTarget);
   const stopWatchingClips = onClipSaved(autoUploadClip);
-  getConfig().then(updateAutoUploadVideos);
+  getConfig().then(updateAutoUploadClips);
 
   return {
     name: "Immich Uploader",

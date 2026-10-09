@@ -154,27 +154,19 @@ class Plugin:
             await self.stop()
             await self.start()
 
-    async def set_enabled(self, enabled):
-        config = await self.get_config()
-        config["enabled"] = enabled
-        await self.write_config(config)
-
-        if enabled:
-            await self.start()
-        else:
-            await self.stop()
-
     async def set_auto_upload(self, kind, enabled):
-        """Turn automatic uploads of "screenshots" or "videos" on or off."""
+        """Turn automatic uploads of "screenshots" or "clips" on or off."""
         config = await self.get_config()
         if kind == "screenshots":
-            config["auto_upload"] = enabled
+            # The backend only watches for screenshots, so it runs exactly when they auto-upload.
+            config["enabled"] = enabled
+            config["auto_upload"] = True
         else:
-            config["auto_upload_videos"] = enabled
+            config["auto_upload_clips"] = enabled
         await self.write_config(config)
 
         if kind == "screenshots":
-            await self.restart_if_running()
+            await (self.start() if enabled else self.stop())
 
     async def is_running(self):
         if self.process is None:
