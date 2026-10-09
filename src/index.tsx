@@ -9,6 +9,8 @@ const getConfig = callable<[], PluginConfig>("get_config");
 const setConfig = callable<[PluginConfig], boolean>("set_config");
 const listRecentScreenshots = callable<[], RecentScreenshot[]>("list_recent_screenshots");
 const manualUpload = callable<[string], UploadResult>("manual_upload");
+const login = callable<[string, string, string], UploadResult>("login");
+const logout = callable<[], boolean>("logout");
 
 type RecentScreenshot = {
   name: string;
@@ -30,6 +32,7 @@ type PluginConfig = {
     kind?: "Immich";
     url?: string;
     api_key?: string;
+    email?: string;
   };
 };
 
@@ -40,6 +43,7 @@ type ConfigFormState = {
   screenshotsPath: string;
   immichUrl: string;
   apiKey: string;
+  email: string;
 };
 
 const defaultFormState: ConfigFormState = {
@@ -47,7 +51,9 @@ const defaultFormState: ConfigFormState = {
   autoUpload: true,
   retrierInterval: "60",
   screenshotsPath: "/home/deck/.local/share/Steam/userdata",
-  immichUrl: "https://YOUR_IMMICH_URL/api",  apiKey: "",
+  immichUrl: "https://YOUR_IMMICH_URL/api",
+  apiKey: "",
+  email: "",
 };
 
 function configToFormState(config: PluginConfig | null | undefined): ConfigFormState {
@@ -58,6 +64,7 @@ function configToFormState(config: PluginConfig | null | undefined): ConfigFormS
     screenshotsPath: config?.screenshots_path ?? defaultFormState.screenshotsPath,
     immichUrl: config?.uploader?.url ?? defaultFormState.immichUrl,
     apiKey: config?.uploader?.api_key ?? "",
+    email: config?.uploader?.email ?? "",
   };
 }
 
@@ -73,6 +80,7 @@ function formStateToConfig(form: ConfigFormState): PluginConfig {
       kind: "Immich",
       url: form.immichUrl.trim(),
       api_key: form.apiKey.trim(),
+      email: form.email,
     },
   };
 }
@@ -88,6 +96,11 @@ function Content() {
   const [shotsStatus, setShotsStatus] = useState("Loading recent screenshots...");
   const [shotsBusy, setShotsBusy] = useState(false);
   const [shotStatuses, setShotStatuses] = useState<Record<string, string>>({});
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [loginBusy, setLoginBusy] = useState(false);
+  const [loginStatus, setLoginStatus] = useState("");
+  const loggedIn = config.apiKey.trim() !== "";
 
   const refreshStatus = async () => {
     try {
@@ -126,6 +139,45 @@ function Content() {
       setConfigStatus(`Configuration save failed: ${String(error)}`);
     } finally {
       setConfigBusy(false);
+    }
+  };
+
+  const logIn = async () => {
+    setLoginBusy(true);
+    setLoginStatus("Logging in...");
+    try {
+      const result = await login(config.immichUrl, email, password);
+      if (result.success) {
+        const backendConfig = configToFormState(await getConfig());
+        setConfigState((current) => ({
+          ...current,
+          immichUrl: backendConfig.immichUrl,
+          apiKey: backendConfig.apiKey,
+          email: backendConfig.email,
+        }));
+        setPassword("");
+        setLoginStatus("");
+      } else {
+        setLoginStatus(`Login failed: ${result.error ?? "unknown error"}`);
+      }
+    } catch (error) {
+      setLoginStatus(`Login failed: ${String(error)}`);
+    } finally {
+      setLoginBusy(false);
+    }
+  };
+
+  const logOut = async () => {
+    setLoginBusy(true);
+    try {
+      await logout();
+      setConfigState((current) => ({ ...current, apiKey: "", email: "" }));
+      setLoginStatus("");
+    } catch (error) {
+      setLoginStatus(`Log out failed: ${String(error)}`);
+    } finally {
+      setLoginBusy(false);
+      await refreshStatus();
     }
   };
 
@@ -230,16 +282,55 @@ function Content() {
             onChange={(event) => setConfigState((current) => ({ ...current, immichUrl: event.target.value }))}
           />
         </PanelSectionRow>
-        <PanelSectionRow>
-          <TextField
-            label="API Key"
-            value={config.apiKey}
-            disabled={configBusy}
-            bIsPassword
-            bShowClearAction
-            onChange={(event) => setConfigState((current) => ({ ...current, apiKey: event.target.value }))}
-          />
-        </PanelSectionRow>
+        {loginStatus && (
+          <PanelSectionRow>
+            <div style={{ opacity: 0.8, marginBottom: "8px" }}>{loginStatus}</div>
+          </PanelSectionRow>
+        )}
+        {loggedIn ? (
+          <>
+            <PanelSectionRow>
+              <div style={{ opacity: 0.8, marginBottom: "8px" }}>
+                {config.email ? `Logged in as ${config.email}` : "Logged in"}
+              </div>
+            </PanelSectionRow>
+            <PanelSectionRow>
+              <ButtonItem layout="below" disabled={loginBusy || configBusy} onClick={logOut}>
+                {loginBusy ? "Logging out..." : "Log Out"}
+              </ButtonItem>
+            </PanelSectionRow>
+          </>
+        ) : (
+          <>
+            <PanelSectionRow>
+              <TextField
+                label="Email"
+                value={email}
+                disabled={loginBusy}
+                onChange={(event) => setEmail(event.target.value)}
+              />
+            </PanelSectionRow>
+            <PanelSectionRow>
+              <TextField
+                label="Password"
+                value={password}
+                disabled={loginBusy}
+                // The Steam client ignores bIsPassword; its own login screen masks input with type="password".
+                {...{ type: "password" }}
+                onChange={(event) => setPassword(event.target.value)}
+              />
+            </PanelSectionRow>
+            <PanelSectionRow>
+              <ButtonItem
+                layout="below"
+                disabled={loginBusy || configBusy || !email.trim() || !password}
+                onClick={logIn}
+              >
+                {loginBusy ? "Logging in..." : "Log In"}
+              </ButtonItem>
+            </PanelSectionRow>
+          </>
+        )}
         <PanelSectionRow>
           <TextField
             label="Retrier Interval (seconds)"

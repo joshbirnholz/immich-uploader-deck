@@ -17,7 +17,7 @@ Immich Uploader is a service for your Steam Deck that automatically uploads any 
 
 ### Configuration
 1. **Immich URL:** The API endpoint of your Immich instance (e.g., `http://192.168.1.10:2283/api`).
-2. **API Key:** Your personal API key generated in Immich settings.
+2. **Login:** Enter your Immich email and password and press **Log In**. The plugin creates an upload-only API key named "Steam Deck" and saves it; your password is not stored. You can revoke the key anytime in Immich under Account Settings → API Keys.
 
 ### Installation
 This plugin is designed for [Decky Loader](https://github.com/SteamDeckHomebrew/decky-loader).
@@ -41,7 +41,7 @@ Immich Uploader ist ein Dienst für das Steam Deck, der automatisch jeden Screen
 
 ### Konfiguration
 1. **Immich-URL:** Der API-Endpunkt deiner Immich-Instanz (z. B. `http://192.168.1.10:2283/api`).
-2. **API-Key:** Dein persönlicher API-Key, den du in den Immich-Einstellungen erstellt hast.
+2. **Anmeldung:** Gib deine Immich-E-Mail und dein Passwort ein und tippe auf **Log In**. Das Plugin erstellt einen API-Key namens „Steam Deck“ (nur Upload-Rechte) und speichert ihn; dein Passwort wird nicht gespeichert. Du kannst den Key jederzeit in Immich unter Kontoeinstellungen → API-Schlüssel widerrufen.
 
 ### Installation
 Dieses Plugin wurde für den [Decky Loader](https://github.com/SteamDeckHomebrew/decky-loader) entwickelt.
