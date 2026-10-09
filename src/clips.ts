@@ -31,9 +31,13 @@ let store: RecordingStore | undefined;
 let service: RecordingService | undefined;
 
 function recordingStore(): RecordingStore {
-  store ??= findModuleExport(
-    (e: any) => e && typeof e === "object" && typeof e.ExportClip === "function" && typeof e.GetClipSummary === "function",
-  );
+  // Steam creates the store lazily and keeps it on window.g_GRS; it isn't a module export
+  // Decky's lookup can see, so the export search is only a fallback.
+  store ??=
+    (window as any).g_GRS ??
+    findModuleExport(
+      (e: any) => e && typeof e === "object" && typeof e.ExportClip === "function" && typeof e.GetClipSummary === "function",
+    );
   if (!store) {
     throw new Error("Steam's game recording store wasn't found.");
   }
