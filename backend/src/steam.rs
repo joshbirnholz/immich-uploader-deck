@@ -41,8 +41,17 @@ impl GameScreenshot {
 
   /// "<game> <YYYY-MM-DD HH-MM-SS>.<ext>", using the capture time from the caller or Steam's file name.
   pub fn upload_file_name(&self, game_name: Option<&str>, modified: SystemTime) -> String {
+    let game_name = game_name.map(sanitize_file_name);
+    format!("{}.{}", self.title(game_name.as_deref(), modified), self.extension())
+  }
+
+  /// The photo description: the same game name and capture time as the file name, without sanitizing.
+  pub fn description(&self, game_name: Option<&str>, modified: SystemTime) -> String {
+    self.title(game_name, modified)
+  }
+
+  fn title(&self, game_name: Option<&str>, modified: SystemTime) -> String {
     let stem = self.path.file_stem().map(|stem| stem.to_string_lossy()).unwrap_or_default();
-    let extension = self.extension();
 
     // Steam names screenshots "YYYYMMDDHHMMSS_N", where N counts shots taken in the same second.
     let (timestamp, sequence) = stem.split_once('_').unwrap_or((&stem, "1"));
@@ -54,14 +63,14 @@ impl GameScreenshot {
     let sequence = if self.captured_at.is_some() { "1" } else { sequence };
 
     let mut name = taken.format("%Y-%m-%d %H-%M-%S").to_string();
-    if let Some(game) = game_name.map(sanitize_file_name).filter(|game| !game.is_empty()) {
+    if let Some(game) = game_name.filter(|game| !game.is_empty()) {
       name = format!("{game} {name}");
     }
     if sequence.parse::<u32>().map_or(false, |n| n > 1) {
       name = format!("{name} ({sequence})");
     }
 
-    format!("{name}.{extension}")
+    name
   }
 
   pub async fn upload(&self, uploader: &dyn Uploader, db: Db) -> Result<&GameScreenshot, anyhow::Error> {
@@ -136,6 +145,11 @@ mod tests {
       shot.upload_file_name(Some("Half-Life 2: Episode One"), SystemTime::now()),
       "Half-Life 2 - Episode One 2026-10-07 22-54-06.jpg"
     );
+    assert_eq!(
+      shot.description(Some("Half-Life 2: Episode One"), SystemTime::now()),
+      "Half-Life 2: Episode One 2026-10-07 22-54-06"
+    );
+    assert_eq!(shot.description(None, SystemTime::now()), "2026-10-07 22-54-06");
   }
 
   #[test]

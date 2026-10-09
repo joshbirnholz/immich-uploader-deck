@@ -88,12 +88,11 @@ impl Uploader for ImmichUploader {
         // reject the .xmp sidecar. The asset part's file name already sets the name Immich shows.
 
         // Immich has no description upload field, but reads the description from an XMP sidecar.
-        if let Some(game_name) = &game_name {
-            let sidecar = multipart::Part::text(description_sidecar(game_name))
-                .file_name(format!("{upload_name}.xmp"))
-                .mime_str("application/xml")?;
-            form = form.part("sidecarData", sidecar);
-        }
+        let description = screenshot.description(game_name.as_deref(), mtime);
+        let sidecar = multipart::Part::text(description_sidecar(&description))
+            .file_name(format!("{upload_name}.xmp"))
+            .mime_str("application/xml")?;
+        form = form.part("sidecarData", sidecar);
 
         let url = format!("{}/assets", self.config.url.trim_end_matches('/'));
         let response = self.client

@@ -9,6 +9,7 @@ mod uploaders;
 
 use std::{
   env,
+  io::Write,
   path::{Path, PathBuf},
   sync::mpsc::channel,
   time::Duration,
@@ -126,12 +127,14 @@ async fn main() -> Result<(), anyhow::Error> {
                     "path" => screenshot.path.display(),
                     "game" => screenshot.game_name().await.unwrap_or_default()
                 });
+                report_upload(Ok(()), true);
               }
 
               Err(err) => {
                 kvlog!(Error, "could not upload screenshot", {
                     "error" => format!("{err:#}")
                 });
+                report_upload(Err(&err), true);
               }
             }
 
@@ -157,12 +160,14 @@ async fn main() -> Result<(), anyhow::Error> {
                   "path" => screenshot.path.display(),
                   "game" => screenshot.game_name().await.unwrap_or_default()
               });
+              report_upload(Ok(()), false);
             }
 
             Err(err) => {
               kvlog!(Error, "could not upload screenshot", {
                   "error" => format!("{err:#}")
               });
+              report_upload(Err(&err), false);
             }
           }
         }
@@ -171,4 +176,18 @@ async fn main() -> Result<(), anyhow::Error> {
   }
 
   Ok(())
+}
+
+/// Tells the plugin about an automatic upload on stdout, so it can show a notification.
+fn report_upload(result: Result<(), &anyhow::Error>, retry: bool) {
+  let event = serde_json::json!({
+    "kind": "screenshot",
+    "success": result.is_ok(),
+    "retry": retry,
+    "error": result.err().map(|err| format!("{err:#}")),
+  });
+
+  let mut stdout = std::io::stdout().lock();
+  let _ = writeln!(stdout, "IMMICH_EVENT {event}");
+  let _ = stdout.flush();
 }

@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import json
+import threading
 import ssl
 import urllib.error
 import urllib.request
@@ -17,12 +18,14 @@ BACKEND_PID_FILE = CONFIG_DIR / "backend.pid"
 PENDING_VIDEOS_DIR = CONFIG_DIR / "pending-videos"
 BACKEND_BINARY = PLUGIN_DIR / "bin" / "immichuploader"
 VIDEO_RETRY_SECONDS = 60
+BACKEND_EVENT_PREFIX = "IMMICH_EVENT "
 SYSTEM_CA_BUNDLE = pathlib.Path("/etc/ssl/certs/ca-certificates.crt")
 API_KEY_PERMISSIONS = ["asset.upload", "album.read", "albumAsset.create"]
 
 sys.path.insert(0, str(PLUGIN_DIR / "py_modules"))
 
 import yaml
+import decky
 
 
 def log(message):
@@ -101,8 +104,10 @@ def stop_stale_backend():
 class Plugin:
     process = None
     video_lock = None
+    loop = None
 
     async def _main(self):
+        self.loop = asyncio.get_running_loop()
         os.makedirs(CONFIG_DIR, exist_ok=True)
         os.makedirs(PENDING_VIDEOS_DIR, exist_ok=True)
         self.video_lock = asyncio.Lock()
@@ -131,8 +136,12 @@ class Plugin:
                 self.process = subprocess.Popen(
                     [str(BACKEND_BINARY), "-c", str(CONFIG_FILE)],
                     cwd=str(PLUGIN_DIR),
+                    stdout=subprocess.PIPE,
+                    text=True,
+                    bufsize=1,
                 )
                 BACKEND_PID_FILE.write_text(str(self.process.pid))
+                threading.Thread(target=self.forward_backend_output, args=(self.process,), daemon=True).start()
             except Exception as exc:
                 log(f"failed to start backend service: {exc}")
                 self.process = None
@@ -148,6 +157,24 @@ class Plugin:
 
         self.process = None
         BACKEND_PID_FILE.unlink(missing_ok=True)
+
+    def forward_backend_output(self, process):
+        """Runs on a thread: passes the backend's upload events to the frontend and logs the rest."""
+        for line in process.stdout:
+            line = line.rstrip("\n")
+            if line.startswith(BACKEND_EVENT_PREFIX):
+                try:
+                    event = json.loads(line[len(BACKEND_EVENT_PREFIX):])
+                except ValueError:
+                    continue
+                asyncio.run_coroutine_threadsafe(decky.emit("auto_upload", event), self.loop)
+            elif line:
+                log(f"backend: {line}")
+
+    async def set_notifications(self, enabled):
+        config = await self.get_config()
+        config["notifications"] = enabled
+        await self.write_config(config)
 
     async def restart_if_running(self):
         if await self.is_running():
@@ -327,4 +354,5 @@ class Plugin:
     async def retry_pending_videos(self):
         for video in sorted(PENDING_VIDEOS_DIR.glob("*.mp4")):
             log(f"retrying video upload: {video.stem}")
-            await self.upload_pending_video(video)
+            result = await self.upload_pending_video(video)
+            await decky.emit("auto_upload", {"kind": "clip", "retry": True, **result})

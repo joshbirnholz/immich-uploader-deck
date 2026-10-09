@@ -1,4 +1,4 @@
-import { callable, definePlugin, toaster } from "@decky/api";
+import { addEventListener, callable, definePlugin, removeEventListener, toaster } from "@decky/api";
 import { ButtonItem, DropdownItem, PanelSection, PanelSectionRow, TextField, ToggleField } from "@decky/ui";
 import { useEffect, useState } from "react";
 import { FaCloudUploadAlt } from "react-icons/fa";
@@ -13,6 +13,7 @@ const setAlbum = callable<[string], boolean>("set_album");
 const manualUpload = callable<[string, string], Result>("manual_upload");
 const uploadVideo = callable<[string, string, string, number], Result>("upload_video");
 const setAutoUpload = callable<["screenshots" | "clips", boolean], void>("set_auto_upload");
+const setNotifications = callable<[boolean], void>("set_notifications");
 
 type Result = {
   success: boolean;
@@ -28,6 +29,7 @@ type PluginConfig = {
   enabled?: boolean;
   auto_upload?: boolean;
   auto_upload_clips?: boolean;
+  notifications?: boolean;
   uploader?: {
     url?: string;
     api_key?: string;
@@ -38,11 +40,29 @@ type PluginConfig = {
 
 const PLACEHOLDER_URL = "https://YOUR_IMMICH_URL/api";
 
-// Read by the saved-clip listener, which runs outside the panel.
-const autoUploadClips = { enabled: false };
+// Read by the automatic upload handlers, which run outside the panel.
+const settings = { autoUploadClips: false, notifications: true };
 
-function updateAutoUploadClips(config: PluginConfig) {
-  autoUploadClips.enabled = config.auto_upload_clips ?? false;
+function applySettings(config: PluginConfig) {
+  settings.autoUploadClips = config.auto_upload_clips ?? false;
+  settings.notifications = config.notifications ?? true;
+}
+
+type AutoUploadEvent = {
+  kind: "screenshot" | "clip";
+  success: boolean;
+  retry: boolean;
+  error?: string;
+};
+
+/** Successes only notify when notifications are on; first-attempt errors always do. Failed retries stay quiet. */
+function notifyAutoUpload({ kind, success, retry, error }: AutoUploadEvent) {
+  const what = kind === "screenshot" ? "Screenshot" : "Clip";
+  if (success && settings.notifications) {
+    toaster.toast({ title: "Immich", body: `${what} uploaded.` });
+  } else if (!success && !retry) {
+    toaster.toast({ title: "Immich Upload Failed", body: error || `${what} couldn't be uploaded.` });
+  }
 }
 
 function LoginForm({ initialUrl, onLoggedIn }: { initialUrl: string; onLoggedIn: () => void }) {
@@ -104,6 +124,7 @@ function LoginForm({ initialUrl, onLoggedIn }: { initialUrl: string; onLoggedIn:
 function AccountPanel({ config, onLoggedOut }: { config: PluginConfig; onLoggedOut: () => void }) {
   const [screenshots, setScreenshots] = useState((config.enabled ?? true) && (config.auto_upload ?? true));
   const [clips, setClips] = useState(config.auto_upload_clips ?? false);
+  const [notifications, setNotificationsState] = useState(config.notifications ?? true);
   const [albumId, setAlbumId] = useState(config.uploader?.album_id ?? "");
   const [albums, setAlbums] = useState<Album[] | null>(null);
   const [albumError, setAlbumError] = useState("");
@@ -128,8 +149,14 @@ function AccountPanel({ config, onLoggedOut }: { config: PluginConfig; onLoggedO
 
   const toggleClips = async (checked: boolean) => {
     setClips(checked);
-    updateAutoUploadClips({ auto_upload_clips: checked });
+    settings.autoUploadClips = checked;
     await setAutoUpload("clips", checked);
+  };
+
+  const toggleNotifications = async (checked: boolean) => {
+    setNotificationsState(checked);
+    settings.notifications = checked;
+    await setNotifications(checked);
   };
 
   const chooseAlbum = async (id: string) => {
@@ -157,6 +184,9 @@ function AccountPanel({ config, onLoggedOut }: { config: PluginConfig; onLoggedO
         </PanelSectionRow>
         <PanelSectionRow>
           <ToggleField label="Clips" checked={clips} onChange={toggleClips} />
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <ToggleField label="Notifications" checked={notifications} onChange={toggleNotifications} />
         </PanelSectionRow>
         <PanelSectionRow>
           <div style={{ fontSize: "12px", opacity: 0.7 }}>
@@ -275,23 +305,23 @@ async function uploadShareTarget(target: ShareTarget) {
 }
 
 async function autoUploadClip(summary: ClipSummary) {
-  if (!autoUploadClips.enabled) {
+  if (!settings.autoUploadClips) {
     return;
   }
   try {
     const result = await uploadClip(summary);
-    if (!result.success) {
-      console.warn("[immichuploader] video upload failed, will retry", result.error);
-    }
+    notifyAutoUpload({ kind: "clip", success: result.success, retry: false, error: result.error });
   } catch (err) {
-    console.error("[immichuploader] could not upload video", err);
+    console.error("[immichuploader] could not upload clip", err);
+    notifyAutoUpload({ kind: "clip", success: false, retry: false, error: err instanceof Error ? err.message : String(err) });
   }
 }
 
 export default definePlugin(() => {
   const unpatchShareMenu = patchShareMenu(uploadShareTarget);
   const stopWatchingClips = onClipSaved(autoUploadClip);
-  getConfig().then(updateAutoUploadClips);
+  const autoUploadListener = addEventListener<[AutoUploadEvent]>("auto_upload", notifyAutoUpload);
+  getConfig().then(applySettings);
 
   return {
     name: "Immich Uploader",
@@ -301,6 +331,7 @@ export default definePlugin(() => {
     onDismount() {
       unpatchShareMenu();
       stopWatchingClips();
+      removeEventListener("auto_upload", autoUploadListener);
     },
   };
 });
