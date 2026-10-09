@@ -1,7 +1,7 @@
 use std::{ffi::OsStr, path::{Path, PathBuf}, time::SystemTime};
 
 use anyhow::anyhow;
-use chrono::{DateTime, Local, NaiveDateTime};
+use chrono::{DateTime, Local, NaiveDateTime, Utc};
 
 use crate::{database::Db, games, Uploader};
 
@@ -10,6 +10,8 @@ pub struct GameScreenshot {
   pub path: PathBuf,
   /// Name supplied by the caller (e.g. the Steam UI), which takes precedence over looking it up.
   pub known_game_name: Option<String>,
+  /// Capture time supplied by the caller, for files (like exported clips) whose name doesn't carry one.
+  pub captured_at: Option<DateTime<Utc>>,
 }
 
 impl GameScreenshot {
@@ -25,15 +27,31 @@ impl GameScreenshot {
     name.map(|name| name.trim().to_string()).filter(|name| !name.is_empty())
   }
 
-  /// "<game> <YYYY-MM-DD HH-MM-SS>.jpg", using the capture time from Steam's file name.
+  pub fn extension(&self) -> String {
+    self.path.extension().map(|ext| ext.to_string_lossy().to_lowercase()).unwrap_or_else(|| "jpg".into())
+  }
+
+  pub fn mime_type(&self) -> &'static str {
+    match self.extension().as_str() {
+      "mp4" => "video/mp4",
+      "png" => "image/png",
+      _ => "image/jpeg",
+    }
+  }
+
+  /// "<game> <YYYY-MM-DD HH-MM-SS>.<ext>", using the capture time from the caller or Steam's file name.
   pub fn upload_file_name(&self, game_name: Option<&str>, modified: SystemTime) -> String {
     let stem = self.path.file_stem().map(|stem| stem.to_string_lossy()).unwrap_or_default();
-    let extension = self.path.extension().map(|ext| ext.to_string_lossy()).unwrap_or_else(|| "jpg".into());
+    let extension = self.extension();
 
     // Steam names screenshots "YYYYMMDDHHMMSS_N", where N counts shots taken in the same second.
     let (timestamp, sequence) = stem.split_once('_').unwrap_or((&stem, "1"));
-    let taken = NaiveDateTime::parse_from_str(timestamp, "%Y%m%d%H%M%S")
-      .unwrap_or_else(|_| DateTime::<Local>::from(modified).naive_local());
+    let taken = match self.captured_at {
+      Some(captured_at) => DateTime::<Local>::from(captured_at).naive_local(),
+      None => NaiveDateTime::parse_from_str(timestamp, "%Y%m%d%H%M%S")
+        .unwrap_or_else(|_| DateTime::<Local>::from(modified).naive_local()),
+    };
+    let sequence = if self.captured_at.is_some() { "1" } else { sequence };
 
     let mut name = taken.format("%Y-%m-%d %H-%M-%S").to_string();
     if let Some(game) = game_name.map(sanitize_file_name).filter(|game| !game.is_empty()) {
@@ -74,7 +92,7 @@ where
     let path = path.as_ref();
     let game_id = path.iter().rev().nth(2).and_then(|id| id.to_string_lossy().parse::<u64>().ok()).unwrap_or(0);
 
-    GameScreenshot { game_id, path: path.to_owned(), known_game_name: None }
+    GameScreenshot { game_id, path: path.to_owned(), known_game_name: None, captured_at: None }
   }
 }
 
@@ -118,6 +136,15 @@ mod tests {
       shot.upload_file_name(Some("Half-Life 2: Episode One"), SystemTime::now()),
       "Half-Life 2 - Episode One 2026-10-07 22-54-06.jpg"
     );
+  }
+
+  #[test]
+  fn names_clip_from_capture_time() {
+    let mut clip: GameScreenshot = PathBuf::from("/home/deck/.config/immichuploader/pending-videos/clip_1623730_20260712_184907.mp4").into();
+    clip.captured_at = chrono::TimeZone::timestamp_opt(&Utc, 1_784_486_743, 0).single();
+    let expected = DateTime::<Local>::from(clip.captured_at.unwrap()).format("Palworld %Y-%m-%d %H-%M-%S.mp4").to_string();
+    assert_eq!(clip.upload_file_name(Some("Palworld"), SystemTime::now()), expected);
+    assert_eq!(clip.mime_type(), "video/mp4");
   }
 
   #[test]

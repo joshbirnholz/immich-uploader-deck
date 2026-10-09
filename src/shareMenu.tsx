@@ -1,55 +1,82 @@
 import { findModule } from "@decky/ui";
 import { ReactNode, createContext, useContext } from "react";
+import { ClipCreationRequest, ClipSummary } from "./clips";
 import { ImmichIcon } from "./ImmichIcon";
 
-// Steam's screenshot share menu lives in module-private components, and webpack exports
-// are non-configurable getters, so there is nothing to patch directly. Instead we wrap
-// the JSX runtime Steam renders through:
-//   1. the share sheet element (props: screenshot | items, summoningElement, showConfirmation)
-//      is wrapped in a context provider carrying the screenshots, and
-//   2. its options list (props.options with "clipboard" and "export" entries) is swapped
-//      for a component that appends "Upload to Immich" when that context is present.
+// Steam's share menus live in module-private components, and webpack exports are
+// non-configurable getters, so there is nothing to patch directly. Instead we wrap the
+// JSX runtime Steam renders through:
+//   1. share sheet elements are wrapped in a context provider carrying what's being shared:
+//      - a screenshot:         props { screenshot, summoningElement, showConfirmation }
+//      - a multi-selection:    props { items, summoningElement, showConfirmation }
+//      - a clip:               props { clipCreationRequest, showConfirmation }
+//   2. every options list ({key, onSelected} items) is swapped for a component that adds
+//      "Upload to Immich" when that context is present.
 
-type LocalScreenshot = {
+export type LocalScreenshot = {
   type?: string;
   local?: { strGameID: string; hHandle: number };
 };
 
+export type ShareTarget = {
+  screenshots: LocalScreenshot[];
+  clipRequest?: ClipCreationRequest;
+  clips: ClipSummary[];
+};
+
 type ShareOption = {
   key: string;
-  label: string;
+  label: ReactNode;
   icon?: ReactNode;
   onSelected?: () => void;
 };
 
 type JsxFn = (type: any, props: any, key?: any) => any;
 
-const ScreenshotsContext = createContext<LocalScreenshot[] | null>(null);
+// Clip share sheets put save actions in their own list; "Upload to Immich" goes in the share list.
+const SAVE_OPTION_KEYS = new Set(["save", "saveas", "savetofile", "openfile"]);
 
-function isShareSheetProps(props: any): boolean {
-  return (
-    props != null &&
-    "showConfirmation" in props &&
-    "summoningElement" in props &&
-    (props.screenshot != null || Array.isArray(props.items))
-  );
+const ShareTargetContext = createContext<ShareTarget | null>(null);
+
+function shareTarget(props: any): ShareTarget | null {
+  if (props == null || !("showConfirmation" in props)) {
+    return null;
+  }
+  if (props.clipCreationRequest) {
+    return { screenshots: [], clipRequest: props.clipCreationRequest, clips: [] };
+  }
+  if (!("summoningElement" in props)) {
+    return null;
+  }
+  if (props.screenshot) {
+    return { screenshots: props.screenshot.local ? [props.screenshot] : [], clips: [] };
+  }
+  if (Array.isArray(props.items)) {
+    return {
+      screenshots: props.items.filter((item: any) => item?.type === "screenshot" && item.local),
+      clips: props.items.filter((item: any) => item?.type === "clip" && item.summary).map((item: any) => item.summary),
+    };
+  }
+  return null;
 }
 
-function isShareOptionsProps(props: any): boolean {
+function isOptionsProps(props: any): boolean {
   const options = props?.options;
-  return (
-    Array.isArray(options) &&
-    options.some((option: any) => option?.key === "clipboard") &&
-    options.some((option: any) => option?.key === "export")
-  );
+  return Array.isArray(options) && options.every((option: any) => option && "key" in option && "onSelected" in option);
 }
 
-function localScreenshots(props: any): LocalScreenshot[] {
-  const candidates: LocalScreenshot[] = props.screenshot ? [props.screenshot] : props.items;
-  return candidates.filter((item) => item?.local && (item.type === undefined || item.type === "screenshot"));
+function isEmpty(target: ShareTarget): boolean {
+  return target.screenshots.length === 0 && target.clips.length === 0 && !target.clipRequest;
 }
 
-export function patchShareMenu(onUpload: (screenshots: LocalScreenshot[]) => void): () => void {
+/** Puts Immich directly under "Share on Steam", or first when that option isn't offered. */
+function withImmichOption(options: ShareOption[], immich: ShareOption): ShareOption[] {
+  const shareOnSteam = options.findIndex((option) => option.key === "upload");
+  const index = shareOnSteam + 1;
+  return [...options.slice(0, index), immich, ...options.slice(index)];
+}
+
+export function patchShareMenu(onUpload: (target: ShareTarget) => void): () => void {
   const runtime = findModule((m: any) => typeof m?.jsx === "function" && typeof m?.jsxs === "function" && m.Fragment);
   if (!runtime) {
     console.error("[immichuploader] could not find the JSX runtime; share menu not patched");
@@ -60,35 +87,32 @@ export function patchShareMenu(onUpload: (screenshots: LocalScreenshot[]) => voi
   const originalJsxs: JsxFn = runtime.jsxs;
 
   function OptionsWithImmich({ __immichOriginalType: OriginalType, ...props }: any) {
-    const screenshots = useContext(ScreenshotsContext);
+    const target = useContext(ShareTargetContext);
     const options: ShareOption[] = props.options;
-    const withImmich =
-      screenshots && screenshots.length > 0
-        ? [
-            ...options,
-            {
-              key: "immich",
-              label: "Upload to Immich",
-              icon: originalJsx(ImmichIcon, {}),
-              onSelected: () => onUpload(screenshots),
-            },
-          ]
-        : options;
-    return originalJsx(OriginalType, { ...props, options: withImmich });
+    const isSaveList = options.length > 0 && options.every((option) => SAVE_OPTION_KEYS.has(option.key));
+
+    if (!target || isEmpty(target) || isSaveList) {
+      return originalJsx(OriginalType, props);
+    }
+
+    const immich: ShareOption = {
+      key: "immich",
+      label: "Upload to Immich",
+      icon: originalJsx(ImmichIcon, {}),
+      onSelected: () => onUpload(target),
+    };
+    return originalJsx(OriginalType, { ...props, options: withImmichOption(options, immich) });
   }
 
   const wrap =
     (original: JsxFn): JsxFn =>
     (type, props, key) => {
       if (typeof type === "function" && type !== OptionsWithImmich) {
-        if (isShareSheetProps(props)) {
-          return originalJsx(
-            ScreenshotsContext.Provider,
-            { value: localScreenshots(props), children: original(type, props) },
-            key,
-          );
+        const target = shareTarget(props);
+        if (target) {
+          return originalJsx(ShareTargetContext.Provider, { value: target, children: original(type, props) }, key);
         }
-        if (isShareOptionsProps(props)) {
+        if (isOptionsProps(props)) {
           return originalJsx(OptionsWithImmich, { ...props, __immichOriginalType: type }, key);
         }
       }
@@ -102,12 +126,6 @@ export function patchShareMenu(onUpload: (screenshots: LocalScreenshot[]) => voi
     runtime.jsx = originalJsx;
     runtime.jsxs = originalJsxs;
   };
-}
-
-/** The name Steam shows for the screenshot's game, including non-Steam shortcuts. */
-export function screenshotGameName(screenshot: LocalScreenshot): string {
-  const appStore = (window as any).appStore;
-  return appStore?.GetAppOverviewByGameID?.(screenshot.local!.strGameID)?.display_name ?? "";
 }
 
 export async function screenshotPath(screenshot: LocalScreenshot): Promise<string> {

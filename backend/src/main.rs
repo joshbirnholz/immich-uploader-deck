@@ -39,7 +39,12 @@ async fn main() -> Result<(), anyhow::Error> {
       Command::new("upload")
         .about("Manually upload a screenshot")
         .arg(arg!(<PATH> "Path to the screenshot").required(true).value_parser(value_parser!(PathBuf)))
-        .arg(arg!(--"game-name" <NAME> "Name of the game the screenshot is from").required(false)),
+        .arg(arg!(--"game-name" <NAME> "Name of the game the screenshot is from").required(false))
+        .arg(
+          arg!(--"captured-at" <UNIX_SECONDS> "When the screenshot or clip was captured")
+            .required(false)
+            .value_parser(value_parser!(i64)),
+        ),
     )
     .get_matches();
 
@@ -50,6 +55,7 @@ async fn main() -> Result<(), anyhow::Error> {
     let path = matches.get_one::<PathBuf>("PATH").unwrap();
     let mut screenshot: GameScreenshot = path.clone().into();
     screenshot.known_game_name = matches.get_one::<String>("game-name").cloned();
+    screenshot.captured_at = matches.get_one::<i64>("captured-at").and_then(|secs| chrono::TimeZone::timestamp_opt(&chrono::Utc, *secs, 0).single());
     kvlog!(Info, format!("manually uploading screenshot: {}", path.display()));
 
     match uploader.upload(&screenshot).await {

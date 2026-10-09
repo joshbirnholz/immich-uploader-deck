@@ -13,6 +13,10 @@ import urllib.request
 PLUGIN_DIR = pathlib.Path(__file__).parent.resolve()
 CONFIG_DIR = pathlib.Path("/home/deck/.config/immichuploader")
 CONFIG_FILE = CONFIG_DIR / "immichuploader.yml"
+BACKEND_PID_FILE = CONFIG_DIR / "backend.pid"
+PENDING_VIDEOS_DIR = CONFIG_DIR / "pending-videos"
+BACKEND_BINARY = PLUGIN_DIR / "bin" / "immichuploader"
+VIDEO_RETRY_SECONDS = 60
 SYSTEM_CA_BUNDLE = pathlib.Path("/etc/ssl/certs/ca-certificates.crt")
 API_KEY_PERMISSIONS = ["asset.upload", "album.read", "albumAsset.create"]
 
@@ -81,23 +85,41 @@ def create_api_key(url, email, password):
     return created["secret"]
 
 
+def stop_stale_backend():
+    """Stop a backend left running by an earlier plugin instance (e.g. after Decky restarts)."""
+    try:
+        pid = int(BACKEND_PID_FILE.read_text())
+        cmdline = pathlib.Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
+    except (OSError, ValueError):
+        return
+
+    if cmdline and cmdline[0].endswith(b"bin/immichuploader") and b"upload" not in cmdline:
+        log(f"stopping stale backend service (pid {pid})")
+        os.kill(pid, 15)
+
+
 class Plugin:
     process = None
+    video_lock = None
 
     async def _main(self):
         os.makedirs(CONFIG_DIR, exist_ok=True)
+        os.makedirs(PENDING_VIDEOS_DIR, exist_ok=True)
+        self.video_lock = asyncio.Lock()
 
         if not os.path.exists(CONFIG_FILE):
             shutil.copyfile(PLUGIN_DIR / "immichuploader.yml", CONFIG_FILE)
             os.chmod(CONFIG_FILE, 0o0600)
 
+        stop_stale_backend()
         config = await self.get_config()
 
         if config and config.get("enabled", True):
             await self.start()
 
         while True:
-            await asyncio.sleep(1)
+            await asyncio.sleep(VIDEO_RETRY_SECONDS)
+            await self.retry_pending_videos()
 
     async def _unload(self):
         await self.stop()
@@ -107,13 +129,10 @@ class Plugin:
             log("starting backend service")
             try:
                 self.process = subprocess.Popen(
-                    [
-                        str(PLUGIN_DIR / "bin" / "immichuploader"),
-                        "-c",
-                        str(CONFIG_FILE),
-                    ],
+                    [str(BACKEND_BINARY), "-c", str(CONFIG_FILE)],
                     cwd=str(PLUGIN_DIR),
                 )
+                BACKEND_PID_FILE.write_text(str(self.process.pid))
             except Exception as exc:
                 log(f"failed to start backend service: {exc}")
                 self.process = None
@@ -122,8 +141,13 @@ class Plugin:
         if await self.is_running():
             log("stopping backend service")
             self.process.terminate()
+            try:
+                await asyncio.to_thread(self.process.wait, 5)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
 
         self.process = None
+        BACKEND_PID_FILE.unlink(missing_ok=True)
 
     async def restart_if_running(self):
         if await self.is_running():
@@ -139,6 +163,18 @@ class Plugin:
             await self.start()
         else:
             await self.stop()
+
+    async def set_auto_upload(self, kind, enabled):
+        """Turn automatic uploads of "screenshots" or "videos" on or off."""
+        config = await self.get_config()
+        if kind == "screenshots":
+            config["auto_upload"] = enabled
+        else:
+            config["auto_upload_videos"] = enabled
+        await self.write_config(config)
+
+        if kind == "screenshots":
+            await self.restart_if_running()
 
     async def is_running(self):
         if self.process is None:
@@ -236,31 +272,67 @@ class Plugin:
         await self.restart_if_running()
         return True
 
-    async def manual_upload(self, path, game_name=""):
-        """Upload a single screenshot right away, optionally naming the game it's from."""
+    async def run_upload(self, path, game_name="", captured_at=None):
+        """Upload one file with the backend binary and return {success, error}."""
         uploader = (await self.get_config()).get("uploader") or {}
         if not uploader.get("api_key"):
             return {"success": False, "error": "Log in from the Immich Uploader panel first."}
 
-        log(f"manually uploading: {path}")
-        command = [str(PLUGIN_DIR / "bin" / "immichuploader"), "-c", str(CONFIG_FILE), "upload", path]
+        command = [str(BACKEND_BINARY), "-c", str(CONFIG_FILE), "upload", str(path)]
         if game_name:
             command += ["--game-name", game_name]
+        if captured_at:
+            command += ["--captured-at", str(int(captured_at))]
+
         try:
-            res = await asyncio.to_thread(
-                subprocess.run,
-                command,
-                capture_output=True,
-                text=True,
-            )
+            res = await asyncio.to_thread(subprocess.run, command, capture_output=True, text=True)
         except Exception as exc:
-            log(f"manual upload error: {exc}")
+            log(f"upload error: {exc}")
             return {"success": False, "error": str(exc)}
 
         if res.returncode == 0:
-            log("manual upload successful")
             return {"success": True}
 
-        log(f"manual upload failed: {res.stderr}")
+        log(f"upload failed: {res.stderr}")
         lines = [line for line in res.stderr.strip().splitlines() if line.strip()]
         return {"success": False, "error": lines[-1] if lines else "Upload failed."}
+
+    async def manual_upload(self, path, game_name=""):
+        """Upload a single screenshot right away, optionally naming the game it's from."""
+        log(f"manually uploading: {path}")
+        result = await self.run_upload(path, game_name)
+        if result["success"]:
+            log("manual upload successful")
+        return result
+
+    async def upload_video(self, exported_path, clip_id, game_name="", captured_at=None):
+        """Upload a clip Steam exported to MP4. Failed uploads are kept and retried later."""
+        video = PENDING_VIDEOS_DIR / f"{clip_id}.mp4"
+        shutil.move(exported_path, video)
+        video.with_suffix(".json").write_text(json.dumps({"game_name": game_name, "captured_at": captured_at}))
+
+        log(f"uploading video: {clip_id}")
+        return await self.upload_pending_video(video)
+
+    async def upload_pending_video(self, video):
+        async with self.video_lock:
+            if not video.exists():
+                return {"success": True}
+
+            meta_file = video.with_suffix(".json")
+            try:
+                meta = json.loads(meta_file.read_text())
+            except (OSError, ValueError):
+                meta = {}
+
+            result = await self.run_upload(video, meta.get("game_name", ""), meta.get("captured_at"))
+            if result["success"]:
+                log(f"video uploaded: {video.stem}")
+                video.unlink(missing_ok=True)
+                meta_file.unlink(missing_ok=True)
+            return result
+
+    async def retry_pending_videos(self):
+        for video in sorted(PENDING_VIDEOS_DIR.glob("*.mp4")):
+            log(f"retrying video upload: {video.stem}")
+            await self.upload_pending_video(video)

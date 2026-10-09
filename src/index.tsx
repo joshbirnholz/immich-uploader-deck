@@ -2,7 +2,8 @@ import { callable, definePlugin, toaster } from "@decky/api";
 import { ButtonItem, DropdownItem, PanelSection, PanelSectionRow, TextField, ToggleField } from "@decky/ui";
 import { useEffect, useState } from "react";
 import { FaCloudUploadAlt } from "react-icons/fa";
-import { patchShareMenu, screenshotGameName, screenshotPath } from "./shareMenu";
+import { ClipSummary, exportClip, gameName, onClipSaved, withRequestedClip } from "./clips";
+import { ShareTarget, patchShareMenu, screenshotPath } from "./shareMenu";
 
 const getConfig = callable<[], PluginConfig>("get_config");
 const setEnabled = callable<[boolean], void>("set_enabled");
@@ -11,6 +12,8 @@ const logout = callable<[], boolean>("logout");
 const listAlbums = callable<[], Result & { albums?: Album[] }>("list_albums");
 const setAlbum = callable<[string], boolean>("set_album");
 const manualUpload = callable<[string, string], Result>("manual_upload");
+const uploadVideo = callable<[string, string, string, number], Result>("upload_video");
+const setAutoUpload = callable<["screenshots" | "videos", boolean], void>("set_auto_upload");
 
 type Result = {
   success: boolean;
@@ -24,6 +27,8 @@ type Album = {
 
 type PluginConfig = {
   enabled?: boolean;
+  auto_upload?: boolean;
+  auto_upload_videos?: boolean;
   uploader?: {
     url?: string;
     api_key?: string;
@@ -33,6 +38,13 @@ type PluginConfig = {
 };
 
 const PLACEHOLDER_URL = "https://YOUR_IMMICH_URL/api";
+
+// Read by the saved-clip listener, which runs outside the panel.
+const autoUploadVideos = { enabled: false };
+
+function updateAutoUploadVideos(config: PluginConfig) {
+  autoUploadVideos.enabled = (config.enabled ?? true) && (config.auto_upload_videos ?? false);
+}
 
 function LoginForm({ initialUrl, onLoggedIn }: { initialUrl: string; onLoggedIn: () => void }) {
   const [url, setUrl] = useState(initialUrl);
@@ -92,6 +104,8 @@ function LoginForm({ initialUrl, onLoggedIn }: { initialUrl: string; onLoggedIn:
 
 function AccountPanel({ config, onLoggedOut }: { config: PluginConfig; onLoggedOut: () => void }) {
   const [enabled, setEnabledState] = useState(config.enabled ?? true);
+  const [screenshots, setScreenshots] = useState(config.auto_upload ?? true);
+  const [videos, setVideos] = useState(config.auto_upload_videos ?? false);
   const [albumId, setAlbumId] = useState(config.uploader?.album_id ?? "");
   const [albums, setAlbums] = useState<Album[] | null>(null);
   const [albumError, setAlbumError] = useState("");
@@ -109,9 +123,23 @@ function AccountPanel({ config, onLoggedOut }: { config: PluginConfig; onLoggedO
       .catch((err) => setAlbumError(String(err)));
   }, []);
 
+  useEffect(() => {
+    updateAutoUploadVideos({ enabled, auto_upload_videos: videos });
+  }, [enabled, videos]);
+
   const toggleEnabled = async (checked: boolean) => {
     setEnabledState(checked);
     await setEnabled(checked);
+  };
+
+  const toggleScreenshots = async (checked: boolean) => {
+    setScreenshots(checked);
+    await setAutoUpload("screenshots", checked);
+  };
+
+  const toggleVideos = async (checked: boolean) => {
+    setVideos(checked);
+    await setAutoUpload("videos", checked);
   };
 
   const chooseAlbum = async (id: string) => {
@@ -137,10 +165,16 @@ function AccountPanel({ config, onLoggedOut }: { config: PluginConfig; onLoggedO
         <PanelSectionRow>
           <ToggleField
             label="Upload Automatically"
-            description="Upload new screenshots as soon as they're taken."
+            description="Upload new captures as soon as they're saved."
             checked={enabled}
             onChange={toggleEnabled}
           />
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <ToggleField label="Screenshots" disabled={!enabled} checked={screenshots} onChange={toggleScreenshots} />
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <ToggleField label="Videos" disabled={!enabled} checked={videos} onChange={toggleVideos} />
         </PanelSectionRow>
         <PanelSectionRow>
           <DropdownItem
@@ -191,40 +225,93 @@ function Content() {
   return <AccountPanel config={config} onLoggedOut={reload} />;
 }
 
-async function uploadScreenshots(screenshots: Parameters<typeof screenshotPath>[0][]) {
-  const count = screenshots.length;
-  toaster.toast({ title: "Immich", body: count === 1 ? "Uploading screenshot..." : `Uploading ${count} screenshots...` });
+async function uploadClip(summary: ClipSummary, exportedPath?: string): Promise<Result> {
+  const path = exportedPath ?? (await exportClip(summary.clip_id));
+  return uploadVideo(path, summary.clip_id, gameName(summary.game_id), summary.date_recorded);
+}
+
+function describe(screenshots: number, videos: number): string {
+  const parts = [];
+  if (screenshots > 0) parts.push(screenshots === 1 ? "screenshot" : `${screenshots} screenshots`);
+  if (videos > 0) parts.push(videos === 1 ? "video" : `${videos} videos`);
+  return parts.join(" and ");
+}
+
+async function uploadShareTarget(target: ShareTarget) {
+  const videoCount = target.clips.length + (target.clipRequest ? 1 : 0);
+  const what = describe(target.screenshots.length, videoCount);
+  const total = target.screenshots.length + videoCount;
+  toaster.toast({ title: "Immich", body: `Uploading ${what}...` });
+
+  const uploads: (() => Promise<Result>)[] = [
+    ...target.screenshots.map((screenshot) => async () => {
+      const { strGameID } = screenshot.local!;
+      return manualUpload(await screenshotPath(screenshot), gameName(strGameID));
+    }),
+    ...target.clips.map((summary) => () => uploadClip(summary)),
+  ];
+  if (target.clipRequest) {
+    const request = target.clipRequest;
+    uploads.push(async () => {
+      // The share sheet's clip only exists until cleanup, so export it before letting go.
+      const { summary, path } = await withRequestedClip(request, async (summary) => ({
+        summary,
+        path: await exportClip(summary.clip_id),
+      }));
+      return uploadClip(summary, path);
+    });
+  }
 
   let failed = 0;
   let lastError = "";
-  for (const screenshot of screenshots) {
+  for (const upload of uploads) {
     try {
-      const result = await manualUpload(await screenshotPath(screenshot), screenshotGameName(screenshot));
+      const result = await upload();
       if (!result.success) {
         failed += 1;
         lastError = result.error ?? "";
       }
     } catch (err) {
       failed += 1;
-      lastError = String(err);
+      lastError = err instanceof Error ? err.message : String(err);
     }
   }
 
   if (failed === 0) {
-    toaster.toast({ title: "Immich", body: count === 1 ? "Screenshot uploaded." : `Uploaded ${count} screenshots.` });
+    const done = what.charAt(0).toUpperCase() + what.slice(1);
+    toaster.toast({ title: "Immich", body: total === 1 ? `${done} uploaded.` : `Uploaded ${what}.` });
   } else {
-    toaster.toast({ title: "Immich Upload Failed", body: lastError || `${failed} of ${count} failed.` });
+    toaster.toast({ title: "Immich Upload Failed", body: lastError || `${failed} of ${total} failed.` });
+  }
+}
+
+async function autoUploadClip(summary: ClipSummary) {
+  if (!autoUploadVideos.enabled) {
+    return;
+  }
+  try {
+    const result = await uploadClip(summary);
+    if (!result.success) {
+      console.warn("[immichuploader] video upload failed, will retry", result.error);
+    }
+  } catch (err) {
+    console.error("[immichuploader] could not upload video", err);
   }
 }
 
 export default definePlugin(() => {
-  const unpatchShareMenu = patchShareMenu(uploadScreenshots);
+  const unpatchShareMenu = patchShareMenu(uploadShareTarget);
+  const stopWatchingClips = onClipSaved(autoUploadClip);
+  getConfig().then(updateAutoUploadVideos);
 
   return {
     name: "Immich Uploader",
     icon: <FaCloudUploadAlt />,
     content: <Content />,
     titleView: <div>Immich Uploader</div>,
-    onDismount: unpatchShareMenu,
+    onDismount() {
+      unpatchShareMenu();
+      stopWatchingClips();
+    },
   };
 });

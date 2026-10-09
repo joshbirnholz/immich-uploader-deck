@@ -63,7 +63,7 @@ impl Uploader for ImmichUploader {
         let file = File::open(&screenshot.path).await.context("could not open screenshot file")?;
         let metadata = file.metadata().await.context("could not get file metadata")?;
         let mtime = metadata.modified().context("could not get modification time")?;
-        let iso_time = chrono::DateTime::<chrono::Utc>::from(mtime).to_rfc3339();
+        let iso_time = screenshot.captured_at.unwrap_or_else(|| mtime.into()).to_rfc3339();
 
         // deviceAssetId keeps Steam's own file name so it stays stable regardless of naming.
         let file_name = screenshot.file_name()?.to_string_lossy().to_string();
@@ -75,7 +75,7 @@ impl Uploader for ImmichUploader {
         let stream = ReaderStream::new(file);
         let part = multipart::Part::stream(reqwest::Body::wrap_stream(stream))
             .file_name(upload_name.clone())
-            .mime_str("image/jpeg")?;
+            .mime_str(screenshot.mime_type())?;
 
         let mut form = multipart::Form::new()
             .part("assetData", part)
