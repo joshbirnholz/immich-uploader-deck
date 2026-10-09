@@ -83,8 +83,9 @@ impl Uploader for ImmichUploader {
             .text("deviceId", "SteamDeck")
             .text("fileCreatedAt", iso_time.clone())
             .text("fileModifiedAt", iso_time)
-            .text("filename", upload_name.clone())
             .text("isFavorite", "false");
+        // No "filename" field: Immich checks every part's type against it when present, which would
+        // reject the .xmp sidecar. The asset part's file name already sets the name Immich shows.
 
         // Immich has no description upload field, but reads the description from an XMP sidecar.
         if let Some(game_name) = &game_name {
