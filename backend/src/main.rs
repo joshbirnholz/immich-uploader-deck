@@ -3,6 +3,7 @@ extern crate async_trait;
 
 mod config;
 mod database;
+mod games;
 mod steam;
 mod uploaders;
 
@@ -37,7 +38,8 @@ async fn main() -> Result<(), anyhow::Error> {
     .subcommand(
       Command::new("upload")
         .about("Manually upload a screenshot")
-        .arg(arg!(<PATH> "Path to the screenshot").required(true).value_parser(value_parser!(PathBuf))),
+        .arg(arg!(<PATH> "Path to the screenshot").required(true).value_parser(value_parser!(PathBuf)))
+        .arg(arg!(--"game-name" <NAME> "Name of the game the screenshot is from").required(false)),
     )
     .get_matches();
 
@@ -46,7 +48,8 @@ async fn main() -> Result<(), anyhow::Error> {
 
   if let Some(matches) = args.subcommand_matches("upload") {
     let path = matches.get_one::<PathBuf>("PATH").unwrap();
-    let screenshot: GameScreenshot = path.clone().into();
+    let mut screenshot: GameScreenshot = path.clone().into();
+    screenshot.known_game_name = matches.get_one::<String>("game-name").cloned();
     kvlog!(Info, format!("manually uploading screenshot: {}", path.display()));
 
     match uploader.upload(&screenshot).await {
@@ -115,7 +118,7 @@ async fn main() -> Result<(), anyhow::Error> {
               Ok(screenshot) => {
                 kvlog!(Info, "screenshot uploaded", {
                     "path" => screenshot.path.display(),
-                    "game" => screenshot.game_name().await
+                    "game" => screenshot.game_name().await.unwrap_or_default()
                 });
               }
 
@@ -146,7 +149,7 @@ async fn main() -> Result<(), anyhow::Error> {
             Ok(screenshot) => {
               kvlog!(Info, "screenshot uploaded", {
                   "path" => screenshot.path.display(),
-                  "game" => screenshot.game_name().await
+                  "game" => screenshot.game_name().await.unwrap_or_default()
               });
             }
 

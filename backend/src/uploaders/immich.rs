@@ -65,21 +65,34 @@ impl Uploader for ImmichUploader {
         let mtime = metadata.modified().context("could not get modification time")?;
         let iso_time = chrono::DateTime::<chrono::Utc>::from(mtime).to_rfc3339();
 
+        // deviceAssetId keeps Steam's own file name so it stays stable regardless of naming.
         let file_name = screenshot.file_name()?.to_string_lossy().to_string();
         let device_asset_id = format!("{}-{}", file_name, metadata.len());
 
+        let game_name = screenshot.game_name().await;
+        let upload_name = screenshot.upload_file_name(game_name.as_deref(), mtime);
+
         let stream = ReaderStream::new(file);
         let part = multipart::Part::stream(reqwest::Body::wrap_stream(stream))
-            .file_name(file_name.clone())
+            .file_name(upload_name.clone())
             .mime_str("image/jpeg")?;
 
-        let form = multipart::Form::new()
+        let mut form = multipart::Form::new()
             .part("assetData", part)
             .text("deviceAssetId", device_asset_id)
             .text("deviceId", "SteamDeck")
             .text("fileCreatedAt", iso_time.clone())
             .text("fileModifiedAt", iso_time)
+            .text("filename", upload_name.clone())
             .text("isFavorite", "false");
+
+        // Immich has no description upload field, but reads the description from an XMP sidecar.
+        if let Some(game_name) = &game_name {
+            let sidecar = multipart::Part::text(description_sidecar(game_name))
+                .file_name(format!("{upload_name}.xmp"))
+                .mime_str("application/xml")?;
+            form = form.part("sidecarData", sidecar);
+        }
 
         let url = format!("{}/assets", self.config.url.trim_end_matches('/'));
         let response = self.client
@@ -105,4 +118,29 @@ impl Uploader for ImmichUploader {
 
         Ok(screenshot)
     }
+}
+
+fn description_sidecar(description: &str) -> String {
+    let escaped = description
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;");
+
+    format!(
+        r#"<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/">
+  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+    <rdf:Description rdf:about="" xmlns:dc="http://purl.org/dc/elements/1.1/">
+      <dc:description>
+        <rdf:Alt>
+          <rdf:li xml:lang="x-default">{escaped}</rdf:li>
+        </rdf:Alt>
+      </dc:description>
+    </rdf:Description>
+  </rdf:RDF>
+</x:xmpmeta>
+<?xpacket end="w"?>
+"#
+    )
 }

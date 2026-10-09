@@ -2,7 +2,7 @@ import { callable, definePlugin, toaster } from "@decky/api";
 import { ButtonItem, DropdownItem, PanelSection, PanelSectionRow, TextField, ToggleField } from "@decky/ui";
 import { useEffect, useState } from "react";
 import { FaCloudUploadAlt } from "react-icons/fa";
-import { patchShareMenu, screenshotPath } from "./shareMenu";
+import { patchShareMenu, screenshotGameName, screenshotPath } from "./shareMenu";
 
 const getConfig = callable<[], PluginConfig>("get_config");
 const setEnabled = callable<[boolean], void>("set_enabled");
@@ -10,7 +10,7 @@ const login = callable<[string, string, string], Result>("login");
 const logout = callable<[], boolean>("logout");
 const listAlbums = callable<[], Result & { albums?: Album[] }>("list_albums");
 const setAlbum = callable<[string], boolean>("set_album");
-const manualUpload = callable<[string], Result>("manual_upload");
+const manualUpload = callable<[string, string], Result>("manual_upload");
 
 type Result = {
   success: boolean;
@@ -199,7 +199,7 @@ async function uploadScreenshots(screenshots: Parameters<typeof screenshotPath>[
   let lastError = "";
   for (const screenshot of screenshots) {
     try {
-      const result = await manualUpload(await screenshotPath(screenshot));
+      const result = await manualUpload(await screenshotPath(screenshot), screenshotGameName(screenshot));
       if (!result.success) {
         failed += 1;
         lastError = result.error ?? "";

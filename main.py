@@ -236,17 +236,20 @@ class Plugin:
         await self.restart_if_running()
         return True
 
-    async def manual_upload(self, path):
-        """Upload a single screenshot right away."""
+    async def manual_upload(self, path, game_name=""):
+        """Upload a single screenshot right away, optionally naming the game it's from."""
         uploader = (await self.get_config()).get("uploader") or {}
         if not uploader.get("api_key"):
             return {"success": False, "error": "Log in from the Immich Uploader panel first."}
 
         log(f"manually uploading: {path}")
+        command = [str(PLUGIN_DIR / "bin" / "immichuploader"), "-c", str(CONFIG_FILE), "upload", path]
+        if game_name:
+            command += ["--game-name", game_name]
         try:
             res = await asyncio.to_thread(
                 subprocess.run,
-                [str(PLUGIN_DIR / "bin" / "immichuploader"), "-c", str(CONFIG_FILE), "upload", path],
+                command,
                 capture_output=True,
                 text=True,
             )

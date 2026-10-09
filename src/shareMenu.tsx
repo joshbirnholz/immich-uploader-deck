@@ -1,6 +1,6 @@
 import { findModule } from "@decky/ui";
 import { ReactNode, createContext, useContext } from "react";
-import { FaCloudUploadAlt } from "react-icons/fa";
+import { ImmichIcon } from "./ImmichIcon";
 
 // Steam's screenshot share menu lives in module-private components, and webpack exports
 // are non-configurable getters, so there is nothing to patch directly. Instead we wrap
@@ -69,7 +69,7 @@ export function patchShareMenu(onUpload: (screenshots: LocalScreenshot[]) => voi
             {
               key: "immich",
               label: "Upload to Immich",
-              icon: originalJsx(FaCloudUploadAlt, {}),
+              icon: originalJsx(ImmichIcon, {}),
               onSelected: () => onUpload(screenshots),
             },
           ]
@@ -102,6 +102,12 @@ export function patchShareMenu(onUpload: (screenshots: LocalScreenshot[]) => voi
     runtime.jsx = originalJsx;
     runtime.jsxs = originalJsxs;
   };
+}
+
+/** The name Steam shows for the screenshot's game, including non-Steam shortcuts. */
+export function screenshotGameName(screenshot: LocalScreenshot): string {
+  const appStore = (window as any).appStore;
+  return appStore?.GetAppOverviewByGameID?.(screenshot.local!.strGameID)?.display_name ?? "";
 }
 
 export async function screenshotPath(screenshot: LocalScreenshot): Promise<string> {
