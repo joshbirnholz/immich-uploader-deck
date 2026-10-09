@@ -89,7 +89,8 @@ export function patchShareMenu(onUpload: (target: ShareTarget) => void): () => v
   function OptionsWithImmich({ __immichOriginalType: OriginalType, ...props }: any) {
     const target = useContext(ShareTargetContext);
     const options: ShareOption[] = props.options;
-    const isSaveList = options.length > 0 && options.every((option) => SAVE_OPTION_KEYS.has(option.key));
+    // In Big Picture an existing clip's save list is empty, so empty lists count as save lists too.
+    const isSaveList = options.every((option) => SAVE_OPTION_KEYS.has(option.key));
 
     if (!target || isEmpty(target) || isSaveList) {
       return originalJsx(OriginalType, props);
